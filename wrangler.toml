@@ -1,5 +1,5 @@
 name = "find"
-main = "src/worker.js"
+main = "worker.js"
 compatibility_date = "2024-11-12"
 compatibility_flags = ["nodejs_compat"]
 
