@@ -1,0 +1,1359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="theme-color" content="#000000" />
+<title>Find</title>
+<link href="https://api.mapbox.com/mapbox-gl-js/v3.7.0/mapbox-gl.css" rel="stylesheet" />
+<script src="https://api.mapbox.com/mapbox-gl-js/v3.7.0/mapbox-gl.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<style>
+  /* ─── Reset & Base ────────────────────────────────────────────────── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden;
+    background: #000;
+    color: #fff;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
+                 "Helvetica Neue", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overscroll-behavior: none;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  body {
+    padding: env(safe-area-inset-top) env(safe-area-inset-right)
+             env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
+
+  /* ─── Map ─────────────────────────────────────────────────────────── */
+  #map {
+    position: fixed; inset: 0;
+    width: 100vw; height: 100vh;
+    z-index: 1;
+    transition: filter 600ms cubic-bezier(0.32, 0.72, 0, 1),
+                opacity 600ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  body.finding #map { filter: blur(28px) brightness(0.35) saturate(1.4); opacity: 0.55; }
+  .mapboxgl-ctrl-bottom-right, .mapboxgl-ctrl-bottom-left { display: none !important; }
+
+  /* ─── Liquid Glass Base ───────────────────────────────────────────── */
+  .glass {
+    position: relative;
+    background: rgba(255, 255, 255, 0.06);
+    backdrop-filter: blur(36px) saturate(220%) brightness(1.08);
+    -webkit-backdrop-filter: blur(36px) saturate(220%) brightness(1.08);
+    border: 0.5px solid rgba(255, 255, 255, 0.14);
+    box-shadow:
+      0 1px 0 rgba(255, 255, 255, 0.18) inset,
+      0 -0.5px 0 rgba(0, 0, 0, 0.20) inset,
+      0 1px 24px -2px rgba(0, 0, 0, 0.45),
+      0 16px 48px -12px rgba(0, 0, 0, 0.55);
+    overflow: hidden;
+  }
+  /* Top specular sheen */
+  .glass::before {
+    content: "";
+    position: absolute; top: 0; left: 0; right: 0;
+    height: 50%;
+    background: linear-gradient(180deg,
+      rgba(255, 255, 255, 0.12) 0%,
+      rgba(255, 255, 255, 0.03) 60%,
+      transparent 100%);
+    pointer-events: none;
+    border-radius: inherit;
+  }
+  /* Edge refraction shimmer */
+  .glass::after {
+    content: "";
+    position: absolute; inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    background:
+      radial-gradient(120% 60% at 0% 0%, rgba(255,255,255,0.10) 0%, transparent 50%),
+      radial-gradient(120% 60% at 100% 100%, rgba(180,200,255,0.06) 0%, transparent 50%);
+    mix-blend-mode: screen;
+  }
+
+  /* ─── Top Bar ─────────────────────────────────────────────────────── */
+  .top-bar {
+    position: fixed;
+    top: calc(env(safe-area-inset-top) + 12px);
+    left: 16px; right: 16px;
+    height: 56px;
+    z-index: 10;
+    border-radius: 22px;
+    display: flex;
+    align-items: center;
+    padding: 0 8px 0 18px;
+    gap: 10px;
+    transform: translateY(0);
+    transition: transform 500ms cubic-bezier(0.32, 0.72, 0, 1),
+                opacity 400ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  body.finding .top-bar { transform: translateY(-120%); opacity: 0; pointer-events: none; }
+  .top-bar .status-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #34c759;
+    box-shadow: 0 0 12px rgba(52, 199, 89, 0.6);
+    animation: pulse-dot 2s ease-in-out infinite;
+    flex-shrink: 0;
+  }
+  .top-bar .status-dot.disconnected { background: #ff453a; box-shadow: 0 0 12px rgba(255,69,58,.6); }
+  .top-bar .status-dot.connecting { background: #ff9f0a; box-shadow: 0 0 12px rgba(255,159,10,.6); }
+  @keyframes pulse-dot {
+    0%, 100% { transform: scale(1); opacity: 1; }
+    50% { transform: scale(1.15); opacity: 0.75; }
+  }
+  .top-bar .room-info {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    line-height: 1.15;
+    min-width: 0;
+  }
+  .top-bar .room-label {
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(255,255,255,0.55);
+  }
+  .top-bar .room-id {
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: rgba(255,255,255,0.95);
+    font-variant-numeric: tabular-nums;
+  }
+  .top-bar .share-btn {
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.12);
+    display: flex; align-items: center; justify-content: center;
+    transition: transform 250ms cubic-bezier(0.32, 0.72, 0, 1),
+                background 200ms ease;
+  }
+  .top-bar .share-btn:active { transform: scale(0.92); background: rgba(255,255,255,0.20); }
+  .top-bar .share-btn svg { width: 18px; height: 18px; stroke: #fff; stroke-width: 2; fill: none; }
+
+  /* ─── Bottom Sheet (Member List) ─────────────────────────────────── */
+  .sheet {
+    position: fixed;
+    bottom: calc(env(safe-area-inset-bottom) + 16px);
+    left: 16px; right: 16px;
+    z-index: 10;
+    border-radius: 32px;
+    padding: 18px;
+    max-height: 60vh;
+    transform: translateY(0);
+    transition: transform 600ms cubic-bezier(0.32, 0.72, 0, 1),
+                opacity 400ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  body.finding .sheet { transform: translateY(140%); opacity: 0; pointer-events: none; }
+
+  .sheet-handle {
+    width: 36px; height: 4px;
+    border-radius: 2px;
+    background: rgba(255,255,255,0.25);
+    margin: 0 auto 14px;
+  }
+  .sheet-title {
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: rgba(255,255,255,0.55);
+    margin-bottom: 12px;
+    padding: 0 6px;
+  }
+  .member-list {
+    display: flex; flex-direction: column; gap: 4px;
+    max-height: calc(60vh - 100px);
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .member-list::-webkit-scrollbar { display: none; }
+
+  .member-row {
+    display: flex; align-items: center; gap: 14px;
+    padding: 12px 10px;
+    border-radius: 18px;
+    transition: background 200ms ease, transform 200ms cubic-bezier(0.32, 0.72, 0, 1);
+    animation: slideIn 500ms cubic-bezier(0.32, 0.72, 0, 1) backwards;
+  }
+  @keyframes slideIn {
+    from { transform: translateY(20px); opacity: 0; }
+    to   { transform: translateY(0); opacity: 1; }
+  }
+  .member-row:active { background: rgba(255,255,255,0.08); transform: scale(0.985); }
+  .member-row.self { opacity: 0.65; }
+  .member-row.self:active { background: transparent; transform: none; }
+
+  .member-avatar {
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 600; font-size: 16px;
+    color: #fff;
+    flex-shrink: 0;
+    box-shadow: 0 0 0 0.5px rgba(255,255,255,0.2) inset,
+                0 1px 0 rgba(255,255,255,0.2) inset,
+                0 4px 12px rgba(0,0,0,0.3);
+  }
+  .member-info { flex: 1; min-width: 0; }
+  .member-name {
+    font-size: 16px; font-weight: 500; color: #fff;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    letter-spacing: -0.01em;
+  }
+  .member-meta {
+    font-size: 12px; color: rgba(255,255,255,0.5);
+    margin-top: 2px;
+    font-variant-numeric: tabular-nums;
+  }
+  .member-arrow {
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.10);
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .member-arrow svg { width: 12px; height: 12px; stroke: rgba(255,255,255,0.7); stroke-width: 2.5; fill: none; }
+
+  .empty-state {
+    padding: 30px 20px;
+    text-align: center;
+    color: rgba(255,255,255,0.45);
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  .empty-state .empty-title {
+    font-size: 16px; font-weight: 500; color: rgba(255,255,255,0.7);
+    margin-bottom: 6px;
+  }
+
+  /* ─── Find Mode Overlay ──────────────────────────────────────────── */
+  .find-overlay {
+    position: fixed; inset: 0;
+    z-index: 20;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: space-between;
+    padding: env(safe-area-inset-top) 24px env(safe-area-inset-bottom);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 500ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  body.finding .find-overlay { opacity: 1; pointer-events: auto; }
+
+  .find-header {
+    width: 100%;
+    padding: 18px 0 0;
+    text-align: center;
+    transform: translateY(-12px);
+    opacity: 0;
+    transition: transform 500ms 100ms cubic-bezier(0.32, 0.72, 0, 1),
+                opacity 400ms 100ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  body.finding .find-header { transform: translateY(0); opacity: 1; }
+  .find-target-label {
+    font-size: 11px; font-weight: 500;
+    letter-spacing: 0.16em; text-transform: uppercase;
+    color: rgba(255,255,255,0.5);
+    margin-bottom: 4px;
+  }
+  .find-target-name {
+    font-size: 24px; font-weight: 600;
+    letter-spacing: -0.02em;
+    color: #fff;
+  }
+
+  /* Arrow canvas + halo */
+  .arrow-stage {
+    flex: 1;
+    width: 100%;
+    display: flex; align-items: center; justify-content: center;
+    position: relative;
+    transform: scale(0.85);
+    opacity: 0;
+    transition: transform 700ms 150ms cubic-bezier(0.34, 1.56, 0.64, 1),
+                opacity 500ms 150ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  body.finding .arrow-stage { transform: scale(1); opacity: 1; }
+
+  .arrow-halo {
+    position: absolute;
+    width: 340px; height: 340px;
+    border-radius: 50%;
+    background: radial-gradient(circle,
+      rgba(100, 200, 255, 0.25) 0%,
+      rgba(100, 200, 255, 0.12) 30%,
+      transparent 70%);
+    filter: blur(30px);
+    animation: halo-breathe 4s ease-in-out infinite;
+    transition: background 800ms ease;
+  }
+  .arrow-halo.close {
+    background: radial-gradient(circle,
+      rgba(120, 255, 180, 0.40) 0%,
+      rgba(120, 255, 180, 0.18) 30%,
+      transparent 70%);
+  }
+  .arrow-halo.very-close {
+    background: radial-gradient(circle,
+      rgba(150, 255, 200, 0.55) 0%,
+      rgba(150, 255, 200, 0.25) 30%,
+      transparent 70%);
+    animation: halo-pulse 1.2s ease-in-out infinite;
+  }
+  @keyframes halo-breathe {
+    0%, 100% { transform: scale(1); opacity: 0.85; }
+    50%      { transform: scale(1.08); opacity: 1; }
+  }
+  @keyframes halo-pulse {
+    0%, 100% { transform: scale(1); opacity: 1; }
+    50%      { transform: scale(1.18); opacity: 0.7; }
+  }
+
+  #arrowCanvas {
+    width: 320px; height: 320px;
+    display: block;
+    position: relative;
+    z-index: 2;
+  }
+
+  .find-readout {
+    width: 100%;
+    text-align: center;
+    padding: 0 0 16px;
+    transform: translateY(12px);
+    opacity: 0;
+    transition: transform 500ms 200ms cubic-bezier(0.32, 0.72, 0, 1),
+                opacity 400ms 200ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  body.finding .find-readout { transform: translateY(0); opacity: 1; }
+
+  .find-distance {
+    font-size: 72px;
+    font-weight: 200;
+    letter-spacing: -0.04em;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    color: #fff;
+    margin-bottom: 6px;
+    transition: color 600ms ease;
+  }
+  .find-distance .unit {
+    font-size: 28px;
+    font-weight: 300;
+    letter-spacing: -0.01em;
+    color: rgba(255,255,255,0.6);
+    margin-left: 4px;
+  }
+  .find-bearing-label {
+    font-size: 15px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    color: rgba(255,255,255,0.65);
+  }
+
+  .find-footer {
+    width: 100%;
+    padding: 0 0 16px;
+    display: flex;
+    justify-content: center;
+    transform: translateY(20px);
+    opacity: 0;
+    transition: transform 500ms 250ms cubic-bezier(0.32, 0.72, 0, 1),
+                opacity 400ms 250ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  body.finding .find-footer { transform: translateY(0); opacity: 1; }
+
+  .done-btn {
+    height: 56px;
+    padding: 0 36px;
+    border-radius: 28px;
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: #fff;
+    background: rgba(255,255,255,0.10);
+    backdrop-filter: blur(30px) saturate(180%);
+    -webkit-backdrop-filter: blur(30px) saturate(180%);
+    border: 0.5px solid rgba(255,255,255,0.18);
+    box-shadow:
+      0 1px 0 rgba(255,255,255,0.20) inset,
+      0 -0.5px 0 rgba(0,0,0,0.15) inset,
+      0 10px 30px -8px rgba(0,0,0,0.45);
+    transition: transform 250ms cubic-bezier(0.32, 0.72, 0, 1),
+                background 200ms ease;
+  }
+  .done-btn:active { transform: scale(0.96); background: rgba(255,255,255,0.16); }
+
+  /* Calibration hint */
+  .calibrate-hint {
+    position: absolute;
+    top: calc(env(safe-area-inset-top) + 80px);
+    left: 50%; transform: translateX(-50%);
+    padding: 10px 18px;
+    border-radius: 20px;
+    background: rgba(255, 159, 10, 0.18);
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    border: 0.5px solid rgba(255, 159, 10, 0.35);
+    font-size: 13px;
+    font-weight: 500;
+    color: rgba(255, 220, 180, 0.95);
+    opacity: 0; pointer-events: none;
+    transition: opacity 400ms ease;
+  }
+  .calibrate-hint.show { opacity: 1; }
+
+  /* ─── Welcome Modal ──────────────────────────────────────────────── */
+  .welcome {
+    position: fixed; inset: 0;
+    z-index: 50;
+    background: radial-gradient(circle at 30% 20%, #1a2540 0%, #050810 60%, #000 100%);
+    display: flex;
+    align-items: center; justify-content: center;
+    padding: 24px;
+    transition: opacity 600ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  .welcome.hidden { opacity: 0; pointer-events: none; }
+
+  .welcome-card {
+    width: 100%; max-width: 380px;
+    padding: 40px 28px 28px;
+    border-radius: 36px;
+    background: rgba(255,255,255,0.06);
+    backdrop-filter: blur(40px) saturate(180%);
+    -webkit-backdrop-filter: blur(40px) saturate(180%);
+    border: 0.5px solid rgba(255,255,255,0.14);
+    box-shadow:
+      0 1px 0 rgba(255,255,255,0.18) inset,
+      0 30px 80px -20px rgba(0,0,0,0.6);
+    text-align: center;
+  }
+  .welcome-icon {
+    width: 80px; height: 80px;
+    margin: 0 auto 22px;
+    border-radius: 24px;
+    background: linear-gradient(135deg, #5ac8fa 0%, #007aff 100%);
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 12px 32px -8px rgba(0, 122, 255, 0.5),
+                0 1px 0 rgba(255,255,255,0.3) inset;
+  }
+  .welcome-icon svg { width: 40px; height: 40px; stroke: #fff; stroke-width: 2.4; fill: none; }
+  .welcome-title {
+    font-size: 28px; font-weight: 700;
+    letter-spacing: -0.03em;
+    margin-bottom: 8px;
+  }
+  .welcome-subtitle {
+    font-size: 15px; color: rgba(255,255,255,0.6);
+    line-height: 1.4;
+    margin-bottom: 28px;
+  }
+  .welcome-input {
+    width: 100%;
+    height: 52px;
+    padding: 0 18px;
+    border-radius: 16px;
+    background: rgba(255,255,255,0.08);
+    border: 0.5px solid rgba(255,255,255,0.15);
+    color: #fff;
+    font-size: 16px;
+    font-family: inherit;
+    margin-bottom: 12px;
+    outline: none;
+    transition: background 200ms ease, border 200ms ease;
+  }
+  .welcome-input:focus {
+    background: rgba(255,255,255,0.12);
+    border-color: rgba(100,180,255,0.5);
+  }
+  .welcome-input::placeholder { color: rgba(255,255,255,0.35); }
+
+  .welcome-btn {
+    width: 100%;
+    height: 52px;
+    border-radius: 16px;
+    font-size: 16px; font-weight: 600;
+    background: linear-gradient(180deg, #1f86ff 0%, #0066e0 100%);
+    color: #fff;
+    box-shadow: 0 1px 0 rgba(255,255,255,0.3) inset,
+                0 8px 20px -6px rgba(0, 102, 224, 0.6);
+    transition: transform 200ms cubic-bezier(0.32, 0.72, 0, 1), opacity 200ms ease;
+  }
+  .welcome-btn:active { transform: scale(0.97); opacity: 0.9; }
+  .welcome-btn.secondary {
+    background: rgba(255,255,255,0.08);
+    box-shadow: 0 1px 0 rgba(255,255,255,0.12) inset;
+    margin-top: 8px;
+  }
+  .welcome-divider {
+    display: flex; align-items: center;
+    margin: 18px 0;
+    color: rgba(255,255,255,0.35);
+    font-size: 12px;
+    letter-spacing: 0.1em;
+  }
+  .welcome-divider::before,
+  .welcome-divider::after {
+    content: ""; flex: 1;
+    height: 0.5px; background: rgba(255,255,255,0.12);
+  }
+  .welcome-divider::before { margin-right: 12px; }
+  .welcome-divider::after { margin-left: 12px; }
+
+  /* ─── Toast ──────────────────────────────────────────────────────── */
+  .toast {
+    position: fixed;
+    bottom: calc(env(safe-area-inset-bottom) + 100px);
+    left: 50%;
+    transform: translateX(-50%) translateY(20px);
+    z-index: 100;
+    padding: 12px 22px;
+    border-radius: 24px;
+    background: rgba(20,20,22,0.85);
+    backdrop-filter: blur(30px) saturate(180%);
+    -webkit-backdrop-filter: blur(30px) saturate(180%);
+    border: 0.5px solid rgba(255,255,255,0.12);
+    font-size: 14px; font-weight: 500;
+    color: #fff;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 300ms ease, transform 400ms cubic-bezier(0.32, 0.72, 0, 1);
+    white-space: nowrap;
+  }
+  .toast.show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+
+  /* ─── Map marker (custom) ────────────────────────────────────────── */
+  .map-marker {
+    width: 40px; height: 40px;
+    position: relative;
+    cursor: pointer;
+  }
+  .map-marker .ring {
+    position: absolute; inset: 0;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(0,122,255,0.4) 0%, transparent 70%);
+    animation: marker-pulse 2.4s ease-out infinite;
+  }
+  @keyframes marker-pulse {
+    0%   { transform: scale(0.5); opacity: 1; }
+    100% { transform: scale(2.2); opacity: 0; }
+  }
+  .map-marker .dot {
+    position: absolute;
+    top: 50%; left: 50%;
+    width: 22px; height: 22px;
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    background: #007aff;
+    border: 2.5px solid #fff;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+  }
+  .map-marker.self .dot { background: #007aff; }
+  .map-marker .label {
+    position: absolute;
+    top: -28px; left: 50%;
+    transform: translateX(-50%);
+    padding: 4px 10px;
+    border-radius: 12px;
+    background: rgba(20,20,22,0.85);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    font-size: 11px; font-weight: 600;
+    color: #fff;
+    white-space: nowrap;
+    pointer-events: none;
+    border: 0.5px solid rgba(255,255,255,0.12);
+  }
+
+  /* Mobile touch ripple feel */
+  @media (hover: hover) {
+    .member-row:hover { background: rgba(255,255,255,0.06); }
+    .share-btn:hover { background: rgba(255,255,255,0.18); }
+    .done-btn:hover { background: rgba(255,255,255,0.14); }
+  }
+</style>
+</head>
+<body>
+
+  <!-- ─── Map ────────────────────────────────────────────────────── -->
+  <div id="map"></div>
+
+  <!-- ─── Top Bar ────────────────────────────────────────────────── -->
+  <div class="top-bar glass" id="topBar">
+    <div class="status-dot connecting" id="statusDot"></div>
+    <div class="room-info">
+      <div class="room-label" id="statusLabel">Connecting…</div>
+      <div class="room-id" id="roomId">— — — — — —</div>
+    </div>
+    <button class="share-btn" id="shareBtn" aria-label="Share">
+      <svg viewBox="0 0 24 24"><path d="M12 16V4M12 4l-4 4M12 4l4 4M5 12v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6"/></svg>
+    </button>
+  </div>
+
+  <!-- ─── Bottom Sheet ───────────────────────────────────────────── -->
+  <div class="sheet glass" id="sheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-title">People</div>
+    <div class="member-list" id="memberList"></div>
+  </div>
+
+  <!-- ─── Find Mode ──────────────────────────────────────────────── -->
+  <div class="find-overlay" id="findOverlay">
+    <div class="find-header">
+      <div class="find-target-label">Finding</div>
+      <div class="find-target-name" id="findTargetName">—</div>
+    </div>
+
+    <div class="arrow-stage">
+      <div class="arrow-halo" id="arrowHalo"></div>
+      <canvas id="arrowCanvas" width="640" height="640"></canvas>
+    </div>
+
+    <div class="calibrate-hint" id="calibrateHint">Move your phone in a figure 8 to calibrate</div>
+
+    <div class="find-readout">
+      <div class="find-distance" id="findDistance">— <span class="unit">m</span></div>
+      <div class="find-bearing-label" id="findBearing">—</div>
+    </div>
+
+    <div class="find-footer">
+      <button class="done-btn" id="doneBtn">Done</button>
+    </div>
+  </div>
+
+  <!-- ─── Welcome ────────────────────────────────────────────────── -->
+  <div class="welcome" id="welcome">
+    <div class="welcome-card">
+      <div class="welcome-icon">
+        <svg viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="9"/>
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M12 3v3M12 18v3M3 12h3M18 12h3"/>
+        </svg>
+      </div>
+      <div class="welcome-title" id="welcomeTitle">Find</div>
+      <div class="welcome-subtitle" id="welcomeSubtitle">Share your location with friends in real-time.</div>
+
+      <input type="text" class="welcome-input" id="nameInput" placeholder="Your name" maxlength="20" autocomplete="off" />
+
+      <button class="welcome-btn" id="joinBtn">Join</button>
+      <button class="welcome-btn secondary" id="createBtn" style="display:none">Create new room</button>
+    </div>
+  </div>
+
+  <!-- ─── Toast ──────────────────────────────────────────────────── -->
+  <div class="toast" id="toast"></div>
+
+<script>
+'use strict';
+
+/* ─── Config ──────────────────────────────────────────────────────── */
+const MAPBOX_TOKEN = 'pk.eyJ1IjoiaHV5dWppZSIsImEiOiJjbHZmZDFyaHMwaTc4Mmp0N2t0c3g3b2ljIn0.StmieM2C8i3BdiOkccIWCg';
+const WS_PATH = '/ws/'; // worker route
+const PALETTE = [
+  ['#FF9F0A','#FF6482'], ['#5AC8FA','#007AFF'], ['#30D158','#00C7BE'],
+  ['#FF453A','#FF9F0A'], ['#BF5AF2','#FF375F'], ['#FFD60A','#FF9500'],
+  ['#64D2FF','#5856D6'], ['#32D74B','#34C759']
+];
+
+mapboxgl.accessToken = MAPBOX_TOKEN;
+
+/* ─── State ───────────────────────────────────────────────────────── */
+const state = {
+  ws: null,
+  roomId: null,
+  userId: null,
+  userName: '',
+  myLocation: null,     // {lat, lng, heading, accuracy, speed}
+  deviceHeading: null,  // compass heading 0-360 (0 = north)
+  members: new Map(),   // userId -> {userName, location, marker, color}
+  findingId: null,
+  reconnectAttempts: 0,
+  selfMarker: null,
+  smoothHeading: 0,
+  smoothBearing: 0,
+  permissionRequested: false,
+};
+
+/* ─── DOM ─────────────────────────────────────────────────────────── */
+const $ = id => document.getElementById(id);
+const dom = {
+  topBar: $('topBar'), statusDot: $('statusDot'), statusLabel: $('statusLabel'),
+  roomId: $('roomId'), shareBtn: $('shareBtn'),
+  sheet: $('sheet'), memberList: $('memberList'),
+  findOverlay: $('findOverlay'), findTargetName: $('findTargetName'),
+  findDistance: $('findDistance'), findBearing: $('findBearing'),
+  doneBtn: $('doneBtn'), arrowHalo: $('arrowHalo'),
+  calibrateHint: $('calibrateHint'),
+  welcome: $('welcome'), welcomeTitle: $('welcomeTitle'),
+  welcomeSubtitle: $('welcomeSubtitle'),
+  nameInput: $('nameInput'), joinBtn: $('joinBtn'), createBtn: $('createBtn'),
+  toast: $('toast'),
+};
+
+/* ─── Utilities ───────────────────────────────────────────────────── */
+const toRad = d => d * Math.PI / 180;
+const toDeg = r => r * 180 / Math.PI;
+
+function haversine(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const φ1 = toRad(lat1), φ2 = toRad(lat2);
+  const Δφ = toRad(lat2 - lat1), Δλ = toRad(lng2 - lng1);
+  const a = Math.sin(Δφ/2)**2 + Math.cos(φ1)*Math.cos(φ2)*Math.sin(Δλ/2)**2;
+  return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+function bearing(lat1, lng1, lat2, lng2) {
+  const φ1 = toRad(lat1), φ2 = toRad(lat2);
+  const Δλ = toRad(lng2 - lng1);
+  const y = Math.sin(Δλ) * Math.cos(φ2);
+  const x = Math.cos(φ1)*Math.sin(φ2) - Math.sin(φ1)*Math.cos(φ2)*Math.cos(Δλ);
+  return (toDeg(Math.atan2(y, x)) + 360) % 360;
+}
+
+function bearingToCompass(b) {
+  const dirs = ['North','Northeast','East','Southeast','South','Southwest','West','Northwest'];
+  return dirs[Math.round(b / 45) % 8];
+}
+
+function formatDistance(m) {
+  if (m == null || isNaN(m)) return ['—', 'm'];
+  if (m < 1000) return [Math.round(m).toString(), 'm'];
+  return [(m/1000).toFixed(m < 10000 ? 2 : 1), 'km'];
+}
+
+function uid() {
+  return 'u_' + Math.random().toString(36).slice(2, 11);
+}
+
+function colorFor(userId) {
+  let h = 0;
+  for (let i = 0; i < userId.length; i++) h = (h * 31 + userId.charCodeAt(i)) >>> 0;
+  return PALETTE[h % PALETTE.length];
+}
+
+function initials(name) {
+  return (name || '?').trim().split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase() || '?';
+}
+
+/** Shortest angular distance in degrees [-180, 180]. */
+function angDelta(a, b) {
+  let d = ((b - a) % 360 + 540) % 360 - 180;
+  return d;
+}
+
+function lerpAngle(current, target, t) {
+  return current + angDelta(current, target) * t;
+}
+
+function showToast(msg, ms = 2000) {
+  dom.toast.textContent = msg;
+  dom.toast.classList.add('show');
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(() => dom.toast.classList.remove('show'), ms);
+}
+
+/* ─── Mapbox Map ──────────────────────────────────────────────────── */
+const map = new mapboxgl.Map({
+  container: 'map',
+  style: 'mapbox://styles/mapbox/dark-v11',
+  center: [-96.797, 32.7767], // Dallas — replaced once we get GPS
+  zoom: 13,
+  pitch: 50,
+  bearing: 0,
+  attributionControl: false,
+  logoPosition: 'top-left',
+});
+
+map.on('load', () => {
+  // subtle fog for depth
+  map.setFog({
+    color: 'rgb(15, 18, 28)',
+    'high-color': 'rgb(20, 30, 60)',
+    'horizon-blend': 0.05,
+    'space-color': 'rgb(5, 8, 18)',
+    'star-intensity': 0.15,
+  });
+});
+
+/* ─── Map markers ─────────────────────────────────────────────────── */
+function buildMarkerEl(name, color, isSelf = false) {
+  const wrap = document.createElement('div');
+  wrap.className = 'map-marker' + (isSelf ? ' self' : '');
+  wrap.innerHTML = `
+    <div class="ring" style="background: radial-gradient(circle, ${color[1]}66 0%, transparent 70%);"></div>
+    <div class="dot" style="background: linear-gradient(135deg, ${color[0]}, ${color[1]});"></div>
+    <div class="label">${escapeHtml(name)}</div>
+  `;
+  return wrap;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
+
+function placeSelf(lat, lng) {
+  if (!state.selfMarker) {
+    const color = colorFor(state.userId || 'me');
+    const el = buildMarkerEl(state.userName + ' (you)', color, true);
+    state.selfMarker = new mapboxgl.Marker({ element: el, anchor: 'center' })
+      .setLngLat([lng, lat]).addTo(map);
+  } else {
+    state.selfMarker.setLngLat([lng, lat]);
+  }
+}
+
+function placeMember(m) {
+  if (!m.location) return;
+  if (!m.marker) {
+    const el = buildMarkerEl(m.userName, m.color);
+    el.addEventListener('click', () => enterFindMode(m.userId));
+    m.marker = new mapboxgl.Marker({ element: el, anchor: 'center' })
+      .setLngLat([m.location.lng, m.location.lat]).addTo(map);
+  } else {
+    m.marker.setLngLat([m.location.lng, m.location.lat]);
+  }
+}
+
+/* ─── Member List ─────────────────────────────────────────────────── */
+function renderMembers() {
+  const list = dom.memberList;
+  list.innerHTML = '';
+
+  // Self row
+  if (state.userId) {
+    const selfColor = colorFor(state.userId);
+    const row = document.createElement('div');
+    row.className = 'member-row self';
+    row.innerHTML = `
+      <div class="member-avatar" style="background: linear-gradient(135deg, ${selfColor[0]}, ${selfColor[1]});">${initials(state.userName)}</div>
+      <div class="member-info">
+        <div class="member-name">${escapeHtml(state.userName)} <span style="color:rgba(255,255,255,0.4);font-weight:400">(you)</span></div>
+        <div class="member-meta">${state.myLocation ? 'Sharing location' : 'Waiting for GPS…'}</div>
+      </div>
+    `;
+    list.appendChild(row);
+  }
+
+  if (state.members.size === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.innerHTML = `
+      <div class="empty-title">You're alone in this room</div>
+      <div>Share the link to invite friends.</div>
+    `;
+    list.appendChild(empty);
+    return;
+  }
+
+  let i = 0;
+  for (const m of state.members.values()) {
+    const row = document.createElement('div');
+    row.className = 'member-row';
+    row.style.animationDelay = `${i * 60}ms`;
+    i++;
+
+    let meta = 'Waiting for GPS…';
+    if (m.location && state.myLocation) {
+      const d = haversine(state.myLocation.lat, state.myLocation.lng, m.location.lat, m.location.lng);
+      const [n, u] = formatDistance(d);
+      const dir = bearingToCompass(bearing(state.myLocation.lat, state.myLocation.lng, m.location.lat, m.location.lng));
+      meta = `${n} ${u} · ${dir}`;
+    } else if (m.location) {
+      meta = 'Online';
+    }
+
+    row.innerHTML = `
+      <div class="member-avatar" style="background: linear-gradient(135deg, ${m.color[0]}, ${m.color[1]});">${initials(m.userName)}</div>
+      <div class="member-info">
+        <div class="member-name">${escapeHtml(m.userName)}</div>
+        <div class="member-meta">${meta}</div>
+      </div>
+      <div class="member-arrow"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></div>
+    `;
+    row.addEventListener('click', () => enterFindMode(m.userId));
+    list.appendChild(row);
+  }
+}
+
+/* ─── WebSocket ───────────────────────────────────────────────────── */
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const url = `${proto}//${location.host}${WS_PATH}${encodeURIComponent(state.roomId)}` +
+              `?userId=${encodeURIComponent(state.userId)}&name=${encodeURIComponent(state.userName)}`;
+
+  setStatus('connecting', 'Connecting…');
+  state.ws = new WebSocket(url);
+
+  state.ws.addEventListener('open', () => {
+    state.reconnectAttempts = 0;
+    setStatus('connected', 'Connected');
+    if (state.myLocation) sendLocation(state.myLocation);
+  });
+
+  state.ws.addEventListener('message', e => {
+    let msg; try { msg = JSON.parse(e.data); } catch { return; }
+    handleMessage(msg);
+  });
+
+  state.ws.addEventListener('close', () => {
+    setStatus('disconnected', 'Reconnecting…');
+    state.reconnectAttempts++;
+    const delay = Math.min(1000 * 2 ** state.reconnectAttempts, 8000);
+    setTimeout(connect, delay);
+  });
+
+  state.ws.addEventListener('error', () => {
+    try { state.ws.close(); } catch {}
+  });
+}
+
+function setStatus(kind, label) {
+  dom.statusDot.className = 'status-dot ' + (kind === 'connected' ? '' : kind);
+  dom.statusLabel.textContent = label;
+}
+
+function handleMessage(msg) {
+  switch (msg.type) {
+    case 'welcome': {
+      // Existing members
+      for (const m of msg.members) addOrUpdateMember(m.userId, m.userName, m.location);
+      renderMembers();
+      break;
+    }
+    case 'join': {
+      addOrUpdateMember(msg.userId, msg.userName, null);
+      showToast(`${msg.userName} joined`);
+      renderMembers();
+      break;
+    }
+    case 'leave': {
+      const m = state.members.get(msg.userId);
+      if (m) {
+        if (m.marker) m.marker.remove();
+        state.members.delete(msg.userId);
+        if (state.findingId === msg.userId) exitFindMode();
+        showToast(`${m.userName} left`);
+        renderMembers();
+      }
+      break;
+    }
+    case 'location': {
+      addOrUpdateMember(msg.userId, msg.userName, msg.location);
+      renderMembers();
+      break;
+    }
+  }
+}
+
+function addOrUpdateMember(userId, userName, location) {
+  let m = state.members.get(userId);
+  if (!m) {
+    m = { userId, userName, location: null, color: colorFor(userId), marker: null };
+    state.members.set(userId, m);
+  }
+  m.userName = userName || m.userName;
+  if (location) {
+    m.location = location;
+    placeMember(m);
+  }
+}
+
+function sendLocation(loc) {
+  if (state.ws?.readyState === WebSocket.OPEN) {
+    state.ws.send(JSON.stringify({
+      type: 'location',
+      lat: loc.lat, lng: loc.lng,
+      heading: loc.heading ?? null,
+      accuracy: loc.accuracy ?? null,
+      speed: loc.speed ?? null,
+    }));
+  }
+}
+
+/* ─── Geolocation ─────────────────────────────────────────────────── */
+let lastSentTs = 0;
+function startGeolocation() {
+  if (!('geolocation' in navigator)) {
+    showToast('Geolocation not supported');
+    return;
+  }
+  navigator.geolocation.watchPosition(pos => {
+    const { latitude: lat, longitude: lng, accuracy, heading, speed } = pos.coords;
+    state.myLocation = { lat, lng, accuracy, heading, speed };
+    placeSelf(lat, lng);
+    // Center on first fix
+    if (!startGeolocation._centered) {
+      map.flyTo({ center: [lng, lat], zoom: 16, duration: 1400 });
+      startGeolocation._centered = true;
+    }
+    // Throttle to ~3 Hz
+    const now = Date.now();
+    if (now - lastSentTs > 350) {
+      lastSentTs = now;
+      sendLocation(state.myLocation);
+    }
+    renderMembers();
+  }, err => {
+    console.warn('Geolocation error:', err);
+    showToast('Location permission required');
+  }, {
+    enableHighAccuracy: true,
+    maximumAge: 1000,
+    timeout: 12000,
+  });
+}
+
+/* ─── Device Orientation (compass) ────────────────────────────────── */
+function handleOrientation(e) {
+  let h = null;
+  // iOS provides webkitCompassHeading (true north, 0-360)
+  if (typeof e.webkitCompassHeading === 'number') {
+    h = e.webkitCompassHeading;
+  } else if (e.absolute && typeof e.alpha === 'number') {
+    h = (360 - e.alpha) % 360;
+  } else if (typeof e.alpha === 'number') {
+    h = (360 - e.alpha) % 360;
+  }
+  if (h != null) {
+    state.deviceHeading = h;
+    if (state.findingId) dom.calibrateHint.classList.remove('show');
+  }
+}
+
+async function startOrientation() {
+  if (state.permissionRequested) return;
+  state.permissionRequested = true;
+
+  // iOS 13+
+  if (typeof DeviceOrientationEvent !== 'undefined' &&
+      typeof DeviceOrientationEvent.requestPermission === 'function') {
+    try {
+      const r = await DeviceOrientationEvent.requestPermission();
+      if (r !== 'granted') {
+        if (state.findingId) dom.calibrateHint.classList.add('show');
+        return;
+      }
+    } catch (err) {
+      console.warn(err);
+    }
+  }
+  // Prefer absolute orientation
+  if ('ondeviceorientationabsolute' in window) {
+    window.addEventListener('deviceorientationabsolute', handleOrientation);
+  }
+  window.addEventListener('deviceorientation', handleOrientation);
+}
+
+/* ─── WebGL Liquid Glass Arrow ────────────────────────────────────── */
+const arrowCanvas = $('arrowCanvas');
+const renderer = new THREE.WebGLRenderer({
+  canvas: arrowCanvas, antialias: true, alpha: true, premultipliedAlpha: false,
+});
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.setSize(arrowCanvas.clientWidth || 320, arrowCanvas.clientHeight || 320, false);
+renderer.outputEncoding = THREE.sRGBEncoding;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.15;
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(28, 1, 0.1, 100);
+camera.position.set(0, 0, 8);
+
+/* Soft procedural cubemap — provides reflections for the glass. */
+function makeEnvMap() {
+  const size = 256;
+  const ctx = document.createElement('canvas');
+  ctx.width = ctx.height = size;
+  const c = ctx.getContext('2d');
+  const g = c.createLinearGradient(0, 0, 0, size);
+  g.addColorStop(0,   '#9ecbff');
+  g.addColorStop(0.5, '#3a78d8');
+  g.addColorStop(1,   '#0a1a35');
+  c.fillStyle = g;
+  c.fillRect(0, 0, size, size);
+  // sparkles
+  c.fillStyle = 'rgba(255,255,255,0.9)';
+  for (let i = 0; i < 20; i++) {
+    const x = Math.random() * size, y = Math.random() * size * 0.5;
+    const r = Math.random() * 1.8 + 0.5;
+    c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.fill();
+  }
+  const tex = new THREE.CanvasTexture(ctx);
+  const cube = new THREE.WebGLCubeRenderTarget(size).fromEquirectangularTexture(renderer, tex);
+  return cube.texture;
+}
+const envMap = makeEnvMap();
+scene.environment = envMap;
+
+/* Build a chevron-arrow geometry: an extruded shape. */
+function makeArrowGeometry() {
+  const shape = new THREE.Shape();
+  shape.moveTo(0, 1.7);
+  shape.lineTo(1.4, 0.1);
+  shape.lineTo(0.55, 0.1);
+  shape.lineTo(0.55, -1.5);
+  shape.lineTo(-0.55, -1.5);
+  shape.lineTo(-0.55, 0.1);
+  shape.lineTo(-1.4, 0.1);
+  shape.closePath();
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: 0.45, bevelEnabled: true,
+    bevelThickness: 0.18, bevelSize: 0.14,
+    bevelSegments: 8, curveSegments: 16,
+  });
+  geo.center();
+  geo.computeVertexNormals();
+  return geo;
+}
+
+const arrowMaterial = new THREE.MeshPhysicalMaterial({
+  color: new THREE.Color('#ffffff'),
+  metalness: 0.0,
+  roughness: 0.08,
+  transmission: 0.75,
+  thickness: 1.2,
+  ior: 1.45,
+  attenuationDistance: 1.8,
+  attenuationColor: new THREE.Color('#a8d0ff'),
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.02,
+  envMapIntensity: 1.4,
+  transparent: true,
+  opacity: 1.0,
+});
+
+const arrow = new THREE.Mesh(makeArrowGeometry(), arrowMaterial);
+scene.add(arrow);
+
+// Inner "glow" core — a slightly smaller, emissive mesh
+const coreMat = new THREE.MeshBasicMaterial({
+  color: new THREE.Color('#bfe0ff'),
+  transparent: true,
+  opacity: 0.35,
+  depthWrite: false,
+});
+const core = new THREE.Mesh(makeArrowGeometry(), coreMat);
+core.scale.setScalar(0.92);
+scene.add(core);
+
+// Lights
+const keyLight = new THREE.DirectionalLight(0xffffff, 2.5);
+keyLight.position.set(2, 3, 4);
+scene.add(keyLight);
+const rimLight = new THREE.DirectionalLight(0x88c0ff, 1.6);
+rimLight.position.set(-3, -2, 2);
+scene.add(rimLight);
+scene.add(new THREE.AmbientLight(0x223355, 0.6));
+
+// Resize handler
+function fitArrowCanvas() {
+  const r = arrowCanvas.getBoundingClientRect();
+  renderer.setSize(r.width, r.height, false);
+  camera.aspect = r.width / r.height;
+  camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', fitArrowCanvas);
+fitArrowCanvas();
+
+// Color stops for distance
+function colorForDistance(d) {
+  // Far (>200): cool cyan; Mid (50-200): white; Close (<50): green; Very close (<10): warm green
+  if (d == null) return new THREE.Color('#a8d0ff');
+  if (d < 10)  return new THREE.Color('#a4ffcb');
+  if (d < 50)  return new THREE.Color('#c8ffd9');
+  if (d < 200) return new THREE.Color('#e6f4ff');
+  return new THREE.Color('#a8d0ff');
+}
+
+let lastFrame = performance.now();
+function animateArrow() {
+  requestAnimationFrame(animateArrow);
+  const now = performance.now();
+  const dt = Math.min((now - lastFrame) / 1000, 0.05);
+  lastFrame = now;
+
+  // Compute target angle: bearing to target minus device heading
+  let targetAngle = state.smoothBearing; // degrees, 0=up
+  if (state.findingId) {
+    const m = state.members.get(state.findingId);
+    if (m?.location && state.myLocation) {
+      const b = bearing(state.myLocation.lat, state.myLocation.lng, m.location.lat, m.location.lng);
+      const h = state.deviceHeading ?? 0;
+      const rel = (b - h + 360) % 360;
+      // Smooth toward target
+      state.smoothBearing = lerpAngle(state.smoothBearing, rel, Math.min(dt * 6, 1));
+      targetAngle = state.smoothBearing;
+
+      // Color & material tint based on distance
+      const d = haversine(state.myLocation.lat, state.myLocation.lng, m.location.lat, m.location.lng);
+      const targetColor = colorForDistance(d);
+      arrowMaterial.attenuationColor.lerp(targetColor, dt * 3);
+      coreMat.color.lerp(targetColor, dt * 3);
+    }
+  }
+
+  // Apply rotation: arrow points up by default; rotate around Z (negative because Y-up screen)
+  arrow.rotation.z = -toRad(targetAngle);
+  core.rotation.z = arrow.rotation.z;
+
+  // Idle bobbing tilt
+  const t = now / 1000;
+  arrow.rotation.x = Math.sin(t * 1.4) * 0.08;
+  arrow.rotation.y = Math.cos(t * 1.1) * 0.10;
+  core.rotation.x = arrow.rotation.x;
+  core.rotation.y = arrow.rotation.y;
+
+  renderer.render(scene, camera);
+}
+animateArrow();
+
+/* ─── Find Mode Logic ─────────────────────────────────────────────── */
+function enterFindMode(userId) {
+  const m = state.members.get(userId);
+  if (!m) return;
+  state.findingId = userId;
+  dom.findTargetName.textContent = m.userName;
+  document.body.classList.add('finding');
+  startOrientation(); // request permission lazily
+
+  if (state.deviceHeading == null) {
+    setTimeout(() => {
+      if (state.deviceHeading == null && state.findingId) {
+        dom.calibrateHint.classList.add('show');
+      }
+    }, 1500);
+  }
+  updateFindReadout();
+}
+
+function exitFindMode() {
+  state.findingId = null;
+  document.body.classList.remove('finding');
+  dom.calibrateHint.classList.remove('show');
+}
+
+function updateFindReadout() {
+  if (!state.findingId) return;
+  const m = state.members.get(state.findingId);
+  if (!m?.location || !state.myLocation) {
+    dom.findDistance.innerHTML = `— <span class="unit">m</span>`;
+    dom.findBearing.textContent = 'Waiting for location…';
+    return;
+  }
+  const d = haversine(state.myLocation.lat, state.myLocation.lng, m.location.lat, m.location.lng);
+  const [n, u] = formatDistance(d);
+  dom.findDistance.innerHTML = `${n}<span class="unit"> ${u}</span>`;
+
+  const b = bearing(state.myLocation.lat, state.myLocation.lng, m.location.lat, m.location.lng);
+  dom.findBearing.textContent = bearingToCompass(b);
+
+  dom.arrowHalo.classList.toggle('close', d < 50);
+  dom.arrowHalo.classList.toggle('very-close', d < 10);
+}
+setInterval(updateFindReadout, 200);
+
+/* ─── Sharing ─────────────────────────────────────────────────────── */
+async function shareRoom() {
+  const url = `${location.origin}${location.pathname}?r=${state.roomId}`;
+  const data = { title: 'Join my Find session', text: `Track me on Find. Room: ${state.roomId}`, url };
+  if (navigator.share) {
+    try { await navigator.share(data); return; } catch {}
+  }
+  try {
+    await navigator.clipboard.writeText(url);
+    showToast('Link copied to clipboard');
+  } catch {
+    prompt('Copy this link:', url);
+  }
+}
+
+/* ─── Init ───────────────────────────────────────────────────────── */
+function init() {
+  // Parse room from URL
+  const params = new URLSearchParams(location.search);
+  const roomParam = params.get('r');
+
+  if (roomParam) {
+    state.roomId = roomParam.toUpperCase();
+    dom.welcomeTitle.textContent = 'Join Room';
+    dom.welcomeSubtitle.textContent = `You've been invited to room ${state.roomId}.`;
+    dom.joinBtn.textContent = 'Join';
+  } else {
+    dom.welcomeTitle.textContent = 'Find';
+    dom.welcomeSubtitle.textContent = 'Share your location with friends in real-time.';
+    dom.joinBtn.textContent = 'Create Room';
+  }
+
+  // Restore last name
+  try {
+    const saved = localStorage.getItem('find:name');
+    if (saved) dom.nameInput.value = saved;
+  } catch {}
+
+  // User clicks Join/Create
+  dom.joinBtn.addEventListener('click', async () => {
+    const name = (dom.nameInput.value || '').trim();
+    if (!name) { dom.nameInput.focus(); return; }
+    state.userName = name;
+    state.userId = uid();
+    try { localStorage.setItem('find:name', name); } catch {}
+
+    if (!state.roomId) {
+      // Generate a room id (worker also validates / creates room state lazily)
+      state.roomId = generateRoomId();
+      history.replaceState({}, '', `${location.pathname}?r=${state.roomId}`);
+    }
+    dom.roomId.textContent = state.roomId;
+    dom.welcome.classList.add('hidden');
+
+    connect();
+    startGeolocation();
+    // Orientation requested when user enters find mode
+  });
+
+  dom.shareBtn.addEventListener('click', shareRoom);
+  dom.doneBtn.addEventListener('click', exitFindMode);
+
+  // Tap empty space on find overlay to also exit (but not on the buttons or canvas)
+  dom.findOverlay.addEventListener('click', (e) => {
+    if (e.target === dom.findOverlay) exitFindMode();
+  });
+}
+
+function generateRoomId() {
+  const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+  let id = '';
+  for (let i = 0; i < 6; i++) id += chars[Math.floor(Math.random() * chars.length)];
+  return id;
+}
+
+// Safety: re-render member meta as our own location updates
+setInterval(() => {
+  if (!document.body.classList.contains('finding')) renderMembers();
+}, 1500);
+
+init();
+</script>
+</body>
+</html>
